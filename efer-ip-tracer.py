@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+efer-ip-tracer.py — A fast, cross-platform tracer + IP info viewer
+Made by efertechtok (fixed)
+"""
+import argparse
 import sys
 import subprocess
 import shutil
@@ -6,9 +11,9 @@ import platform
 import re
 import json
 import urllib.request
-import urllib.error
-from time import sleep
-from colorama import init as colorama_init, Fore, Style
+import socket
+from typing import List, Optional
+from colorama import Fore, Style, init as colorama_init
 
 colorama_init(autoreset=True)
 
@@ -26,136 +31,344 @@ def print_banner():
     """
     print(Fore.CYAN + tux + Style.RESET_ALL)
 
-TRACEROUTE_CMD_POSIX = "traceroute"
-TRACEROUTE_CMD_WIN = "tracert"
+# Regex patterns for IPv4/IPv6
+IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+IPV6_RE = re.compile(r'\b[0-9a-fA-F:]{3,}\b')
+IP_LOOKUP_URL = "https://ipapi.co/{}/json/"
 
-IPV4_RE = re.compile(r'(\d{1,3}(?:\.\d{1,3}){3})')
-IPV6_RE = re.compile(r'([0-9a-fA-F:]{3,})')
-IP_LOOKUP_URL = "https://ipapi.co/{ip}/json/"
+def find_traceroute_cmd() -> Optional[str]:
+    """Find the correct traceroute/tracepath/tracert command."""
+    system = platform.system().lower()
+    if system.startswith("win"):
+        return "tracert" if shutil.which("tracert") else None
+    for cmd in ("traceroute", "tracepath"):
+        if shutil.which(cmd):
+            return cmd
+    return None
 
-def find_traceroute_cmd():
-    if platform.system().lower().startswith("win"):
-        cmd = TRACEROUTE_CMD_WIN
-    else:
-        for candidate in (TRACEROUTE_CMD_POSIX, "tracepath"):
-            if shutil.which(candidate):
-                return candidate
-        cmd = TRACEROUTE_CMD_POSIX
-    return cmd if shutil.which(cmd) else None
-
-def run_traceroute(cmd, target, max_hops=30, timeout=None):
+def run_traceroute(cmd: str, target: str, max_hops: int = 30) -> List[str]:
+    """Run traceroute/tracepath/tracert and return output lines."""
     system = platform.system().lower()
     if system.startswith("win"):
         args = [cmd, "-d", "-h", str(max_hops), target]
+    elif cmd == "tracepath":
+        args = [cmd, target]
     else:
-        args = [cmd, "-n", "-m", str(max_hops), target] if cmd != "tracepath" else [cmd, "-n", target]
+        args = [cmd, "-n", "-m", str(max_hops), target]
+
     try:
-        completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30
+        )
         return completed.stdout.splitlines()
+    except subprocess.TimeoutExpired:
+        print(Fore.RED + "Traceroute timed out (partial/none results)." + Style.RESET_ALL)
+        return []
     except Exception as e:
-        print(Fore.RED + f"Failed to run traceroute: {e}")
+        print(Fore.RED + f"Error running traceroute: {e}" + Style.RESET_ALL)
         return []
 
-def extract_ips(line):
-    ips = IPV4_RE.findall(line)
-    if ips:
-        return ips
-    ipv6 = [x for x in IPV6_RE.findall(line) if ":" in x]
-    return ipv6
+def extract_ips_from_lines(lines: List[str]) -> List[str]:
+    """Extract unique IPs from traceroute output lines preserving order."""
+    seen = set()
+    results = []
+    for line in lines:
+        for m in IPV4_RE.findall(line):
+            # Validate each octet is <= 255
+            parts = m.split('.')
+            if all(0 <= int(p) <= 255 for p in parts):
+                if m not in seen:
+                    seen.add(m); results.append(m)
+        # add IPv6 matches optionally (simple)
+        for m in IPV6_RE.findall(line):
+            if ':' in m and m not in seen:
+                seen.add(m); results.append(m)
+    return results#!/usr/bin/env python3
+"""
+efer-ip-tracer.py — A fast, cross-platform tracer + IP info viewer
+Made by efertechtok (fixed)
+"""
+import argparse
+import sys
+import subprocess
+import shutil
+import platform
+import re
+import json
+import urllib.request
+import socket
+from typing import List, Optional
+from colorama import Fore, Style, init as colorama_init
 
-def lookup_ip_info(ip, timeout=8):
-    url = IP_LOOKUP_URL.format(ip=ip)
+colorama_init(autoreset=True)
+
+def print_banner():
+    tux = r"""
+        .--.  
+       |o_o | 
+       |:_/ | 
+      //   \ \ 
+     (|     | )
+    /'\_   _/`\
+    \___)=(___/
+
+     made by efertechtok
+    """
+    print(Fore.CYAN + tux + Style.RESET_ALL)
+
+# Regex patterns for IPv4/IPv6
+IPV4_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+IPV6_RE = re.compile(r'\b[0-9a-fA-F:]{3,}\b')
+IP_LOOKUP_URL = "https://ipapi.co/{}/json/"
+
+def find_traceroute_cmd() -> Optional[str]:
+    """Find the correct traceroute/tracepath/tracert command."""
+    system = platform.system().lower()
+    if system.startswith("win"):
+        return "tracert" if shutil.which("tracert") else None
+    for cmd in ("traceroute", "tracepath"):
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+def run_traceroute(cmd: str, target: str, max_hops: int = 30) -> List[str]:
+    """Run traceroute/tracepath/tracert and return output lines."""
+    system = platform.system().lower()
+    if system.startswith("win"):
+        args = [cmd, "-d", "-h", str(max_hops), target]
+    elif cmd == "tracepath":
+        args = [cmd, target]
+    else:
+        args = [cmd, "-n", "-m", str(max_hops), target]
+
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "ip_tracer/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30
+        )
+        return completed.stdout.splitlines()
+    except subprocess.TimeoutExpired:
+        print(Fore.RED + "Traceroute timed out (partial/none results)." + Style.RESET_ALL)
+        return []
+    except Exception as e:
+        print(Fore.RED + f"Error running traceroute: {e}" + Style.RESET_ALL)
+        return []
+
+def extract_ips_from_lines(lines: List[str]) -> List[str]:
+    """Extract unique IPs from traceroute output lines preserving order."""
+    seen = set()
+    results = []
+    for line in lines:
+        for m in IPV4_RE.findall(line):
+            # Validate each octet is <= 255
+            parts = m.split('.')
+            if all(0 <= int(p) <= 255 for p in parts):
+                if m not in seen:
+                    seen.add(m); results.append(m)
+        # add IPv6 matches optionally (simple)
+        for m in IPV6_RE.findall(line):
+            if ':' in m and m not in seen:
+                seen.add(m); results.append(m)
+    return results
+
+def lookup_ip(ip: str, timeout: float = 6.0) -> Optional[dict]:
+    url = IP_LOOKUP_URL.format(ip)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.load(resp)
+            # ipapi.co returns keys like "error" for failures
+            if data.get("error"):
+                return None
+            return data
     except Exception:
-        return {"error": True}
+        return None
 
-def is_private_ip(ip):
-    private_blocks = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                      "172.20.", "172.21.", "172.22.", "172.23.",
-                      "172.24.", "172.25.", "172.26.", "172.27.",
-                      "172.28.", "172.29.", "172.30.", "172.31.", "192.168.")
-    return ip.startswith(private_blocks)
+def print_ip_info(ip: str, info: Optional[dict]) -> None:
+    print(Fore.YELLOW + f"\n== {ip} ==" + Style.RESET_ALL)
+    if not info:
+        print("No info available or lookup failed.")
+        return
+    get = lambda k, default="N/A": info.get(k, default)
+    print(Fore.GREEN + "Country: " + Style.RESET_ALL + f"{get('country_name')}")
+    print(Fore.GREEN + "Region:  " + Style.RESET_ALL + f"{get('region')}")
+    print(Fore.GREEN + "City:    " + Style.RESET_ALL + f"{get('city')}")
+    print(Fore.GREEN + "Org:     " + Style.RESET_ALL + f"{get('org') or get('asn') or get('asn_org')}")
+    print(Fore.GREEN + "Postal:  " + Style.RESET_ALL + f"{get('postal')}")
+    print(Fore.GREEN + "Lat/Lon: " + Style.RESET_ALL + f"{get('latitude')}/{get('longitude')}")
+    print(Fore.GREEN + "Timezone:" + Style.RESET_ALL + f" {get('timezone')}")
+    print(Fore.GREEN + "UTC Off: " + Style.RESET_ALL + f"{get('utc_offset') if get('utc_offset') else get('utc_offset')}")
+    # short pause not necessary; keep output quick
 
-def pretty_print_table(hops):
-    print()
-    header = f"{Fore.MAGENTA}{'Hop':<5}{'IP Address':<20}{'City':<20}{'Region':<20}{'Country':<20}{'Organization'}{Style.RESET_ALL}"
-    print(header)
-    print(Fore.MAGENTA + "-" * 100 + Style.RESET_ALL)
-    for hop_no, ip, info in hops:
-        if not ip:
-            continue
+def resolve_target(target: str) -> str:
+    """Return an IP for a hostname, or the same string if it's already an IP."""
+    if IPV4_RE.fullmatch(target) or IPV6_RE.fullmatch(target):
+        return target
+    try:
+        return socket.gethostbyname(target)
+    except Exception:
+        return target
 
-        if info is None or "error" in info:
-            if is_private_ip(ip):
-                city = region = country = "Local Network"
-                org = ""
-            else:
-                city = region = country = "Lookup failed"
-                org = ""
-        else:
-            city = info.get("city", "") or "-"
-            region = info.get("region", "") or "-"
-            country = info.get("country_name", "") or "-"
-            org = info.get("org", "") or "-"
+def main() -> int:
+    parser = argparse.ArgumentParser(description="efer-ip-tracer: tracer + IP info viewer")
+    parser.add_argument("target", nargs="?", help="IP or hostname to trace")
+    args = parser.parse_args()
 
-        print(f"{Fore.CYAN}{hop_no:<5}{Fore.GREEN}{ip:<20}{Fore.YELLOW}{city:<20}{region:<20}{country:<20}{Fore.WHITE}{org}{Style.RESET_ALL}")
-    print()
-    print(Fore.MAGENTA + "-" * 100 + Style.RESET_ALL)
-
-def main():
     print_banner()
 
-    if len(sys.argv) < 2:
-        print("Usage: python ip_tracer.py <target> [--max-hops N] [--no-lookup]")
-        sys.exit(1)
+    if not args.target:
+        target = input("Enter target (IP or hostname): ").strip()
+    else:
+        target = args.target.strip()
 
-    target = sys.argv[1]
-    max_hops = 30
-    do_lookup = True
-    if "--max-hops" in sys.argv:
-        try:
-            max_hops = int(sys.argv[sys.argv.index("--max-hops") + 1])
-        except Exception:
-            pass
-    if "--no-lookup" in sys.argv:
-        do_lookup = False
+    if not target:
+        print("No target provided.")
+        return 1
+
+    ip = resolve_target(target)
+    if ip != target:
+        print(Fore.CYAN + f"Resolved {target} -> {ip}" + Style.RESET_ALL)
 
     cmd = find_traceroute_cmd()
     if not cmd:
-        print(Fore.RED + "No traceroute/tracert command found on PATH.")
-        sys.exit(2)
+        print(Fore.YELLOW + "No traceroute/tracepath/tracert found on system. Skipping traceroute." + Style.RESET_ALL)
+        # Still attempt a single IP lookup
+        info = lookup_ip(ip)
+        print_ip_info(ip, info)
+        return 0
 
-    print(Style.BRIGHT + Fore.MAGENTA + f"Running traceroute ({cmd}) to {target} (max hops: {max_hops})...\n" + Style.RESET_ALL)
-    lines = run_traceroute(cmd, target, max_hops=max_hops)
+    lines = run_traceroute(cmd, ip)
     if not lines:
-        print(Fore.RED + "Traceroute returned no output.")
-        sys.exit(3)
+        # still try one lookup
+        info = lookup_ip(ip)
+        print_ip_info(ip, info)
+        return 0
 
-    hops = []
-    hop_no = 0
-    for line in lines:
-        hop_no += 1
-        ips = extract_ips(line)
-        ip = ips[0] if ips else None
-        info = None
-        if ip and do_lookup:
-            if is_private_ip(ip):
-                # treat private IPs as local network without performing lookup
-                info = None
-            else:
-                info = lookup_ip_info(ip)
-                # be courteous to the lookup service
-                sleep(0.1)
-        hops.append((hop_no, ip, info))
+    # print traceroute output (trim verbose)
+    print(Fore.MAGENTA + "\nTraceroute output:" + Style.RESET_ALL)
+    for l in lines:
+        print(l)
 
-    pretty_print_table(hops)
+    hops = extract_ips_from_lines(lines)
+    if not hops:
+        print("\nNo IPs extracted from traceroute.")
+        return 0
+
+    # Lookup info for each hop (limit to reasonable amount)
+    limit = min(len(hops), 12)
+    print(Fore.CYAN + f"\nLooking up first {limit} hops:" + Style.RESET_ALL)
+    for hop_ip in hops[:limit]:
+        info = lookup_ip(hop_ip)
+        print_ip_info(hop_ip, info)
+
+    return 0
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
-        print("\n" + Fore.RED + "Interrupted by user." + Style.RESET_ALL)
-        sys.exit(4)
+        print("\nInterrupted by user.")
+
+
+def lookup_ip(ip: str, timeout: float = 6.0) -> Optional[dict]:
+    url = IP_LOOKUP_URL.format(ip)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.load(resp)
+            # ipapi.co returns keys like "error" for failures
+            if data.get("error"):
+                return None
+            return data
+    except Exception:
+        return None
+
+def print_ip_info(ip: str, info: Optional[dict]) -> None:
+    print(Fore.YELLOW + f"\n== {ip} ==" + Style.RESET_ALL)
+    if not info:
+        print("No info available or lookup failed.")
+        return
+    get = lambda k, default="N/A": info.get(k, default)
+    print(Fore.GREEN + "Country: " + Style.RESET_ALL + f"{get('country_name')}")
+    print(Fore.GREEN + "Region:  " + Style.RESET_ALL + f"{get('region')}")
+    print(Fore.GREEN + "City:    " + Style.RESET_ALL + f"{get('city')}")
+    print(Fore.GREEN + "Org:     " + Style.RESET_ALL + f"{get('org') or get('asn') or get('asn_org')}")
+    print(Fore.GREEN + "Postal:  " + Style.RESET_ALL + f"{get('postal')}")
+    print(Fore.GREEN + "Lat/Lon: " + Style.RESET_ALL + f"{get('latitude')}/{get('longitude')}")
+    print(Fore.GREEN + "Timezone:" + Style.RESET_ALL + f" {get('timezone')}")
+    print(Fore.GREEN + "UTC Off: " + Style.RESET_ALL + f"{get('utc_offset') if get('utc_offset') else get('utc_offset')}")
+    # short pause not necessary; keep output quick
+
+def resolve_target(target: str) -> str:
+    """Return an IP for a hostname, or the same string if it's already an IP."""
+    if IPV4_RE.fullmatch(target) or IPV6_RE.fullmatch(target):
+        return target
+    try:
+        return socket.gethostbyname(target)
+    except Exception:
+        return target
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="efer-ip-tracer: tracer + IP info viewer")
+    parser.add_argument("target", nargs="?", help="IP or hostname to trace")
+    args = parser.parse_args()
+
+    print_banner()
+
+    if not args.target:
+        target = input("Enter target (IP or hostname): ").strip()
+    else:
+        target = args.target.strip()
+
+    if not target:
+        print("No target provided.")
+        return 1
+
+    ip = resolve_target(target)
+    if ip != target:
+        print(Fore.CYAN + f"Resolved {target} -> {ip}" + Style.RESET_ALL)
+
+    cmd = find_traceroute_cmd()
+    if not cmd:
+        print(Fore.YELLOW + "No traceroute/tracepath/tracert found on system. Skipping traceroute." + Style.RESET_ALL)
+        # Still attempt a single IP lookup
+        info = lookup_ip(ip)
+        print_ip_info(ip, info)
+        return 0
+
+    lines = run_traceroute(cmd, ip)
+    if not lines:
+        # still try one lookup
+        info = lookup_ip(ip)
+        print_ip_info(ip, info)
+        return 0
+
+    # print traceroute output (trim verbose)
+    print(Fore.MAGENTA + "\nTraceroute output:" + Style.RESET_ALL)
+    for l in lines:
+        print(l)
+
+    hops = extract_ips_from_lines(lines)
+    if not hops:
+        print("\nNo IPs extracted from traceroute.")
+        return 0
+
+    # Lookup info for each hop (limit to reasonable amount)
+    limit = min(len(hops), 12)
+    print(Fore.CYAN + f"\nLooking up first {limit} hops:" + Style.RESET_ALL)
+    for hop_ip in hops[:limit]:
+        info = lookup_ip(hop_ip)
+        print_ip_info(hop_ip, info)
+
+    return 0
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
